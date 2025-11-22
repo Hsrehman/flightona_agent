@@ -20,6 +20,9 @@ data/
 *.sqlite
 *.sqlite3
 
+# Passport index dataset (external data, not part of this repo)
+../passport-index-dataset/
+
 # IDE
 .vscode/
 .idea/
