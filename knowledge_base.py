@@ -168,7 +168,12 @@ def create_visa_knowledge_base(
     """
     # Default CSV path - relative to this file's location
     if csv_path is None:
-        csv_path = Path(__file__).parent.parent / "passport-index-dataset" / "passport-index-tidy-iso3.csv"
+        # First try in data/dataset (if pushed to repo), then fallback to parent directory
+        local_path = Path(__file__).parent / "data" / "dataset" / "passport-index-tidy-iso3.csv"
+        if local_path.exists():
+            csv_path = local_path
+        else:
+            csv_path = Path(__file__).parent.parent / "passport-index-dataset" / "passport-index-tidy-iso3.csv"
     
     csv_path = Path(csv_path)
     if not csv_path.exists():

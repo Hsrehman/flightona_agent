@@ -20,8 +20,9 @@ data/
 *.sqlite
 *.sqlite3
 
-# Passport index dataset (external data, not part of this repo)
-../passport-index-dataset/
+# Passport index dataset - exclude everything except the CSV we use
+../passport-index-dataset/*
+!../passport-index-dataset/passport-index-tidy-iso3.csv
 
 # IDE
 .vscode/
