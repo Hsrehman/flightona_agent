@@ -1,11 +1,7 @@
 """RAG integration - creates visa requirements search tool."""
 
-import sys
-from pathlib import Path
-
-sys.path.insert(0, str(Path(__file__).parent.parent))
 from langchain_core.tools import create_retriever_tool
-from travel_agent.knowledge_base import create_visa_knowledge_base
+from knowledge_base import create_visa_knowledge_base
 
 
 def create_visa_rag_tool():
