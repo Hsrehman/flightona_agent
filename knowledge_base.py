@@ -1,7 +1,4 @@
-"""
-Step 1: Visa Rules Knowledge Base
-Creates a vector store from passport-index dataset for RAG queries about visa requirements.
-"""
+"""Visa rules knowledge base - creates vector store from passport-index dataset."""
 
 import pandas as pd
 from pathlib import Path
@@ -14,7 +11,6 @@ import os
 
 load_dotenv()
 
-# ISO-3 to Country Name mapping (common countries)
 ISO3_TO_COUNTRY = {
     "AFG": "Afghanistan", "ALB": "Albania", "DZA": "Algeria", "AND": "Andorra",
     "AGO": "Angola", "ATG": "Antigua and Barbuda", "ARG": "Argentina", "ARM": "Armenia",
@@ -107,8 +103,6 @@ def create_visa_documents(csv_path: str) -> List[Document]:
     """
     print(f"Loading visa data from {csv_path}...")
     df = pd.read_csv(csv_path)
-    
-    # Filter out same country entries (-1)
     df = df[df['Requirement'] != '-1']
     
     documents = []
@@ -122,13 +116,11 @@ def create_visa_documents(csv_path: str) -> List[Document]:
         destination_name = get_country_name(destination_iso)
         requirement_text = format_requirement(requirement)
         
-        # Create document content
         content = (
             f"Citizens of {passport_name} (passport code: {passport_iso}) can travel to "
             f"{destination_name} (destination code: {destination_iso}) with {requirement_text}."
         )
         
-        # Create metadata for filtering and reference
         metadata = {
             "passport_iso": passport_iso,
             "passport_name": passport_name,
@@ -166,9 +158,7 @@ def create_visa_knowledge_base(
     Returns:
         Tuple of (vector_store, retriever)
     """
-    # Default CSV path - relative to this file's location
     if csv_path is None:
-        # First try in data/dataset (if pushed to repo), then fallback to parent directory
         local_path = Path(__file__).parent / "data" / "dataset" / "passport-index-tidy-iso3.csv"
         if local_path.exists():
             csv_path = local_path
@@ -179,32 +169,26 @@ def create_visa_knowledge_base(
     if not csv_path.exists():
         raise FileNotFoundError(f"CSV file not found: {csv_path}")
     
-    # Default persist directory - relative to this file's location (not working directory)
+
     if persist_directory is None:
         persist_path = Path(__file__).parent / "data" / "visa_vectorstore"
     else:
         persist_path = Path(persist_directory)
-        # If relative path provided, resolve it relative to this file
+
         if not persist_path.is_absolute():
             persist_path = Path(__file__).parent / persist_path
     
     persist_path.mkdir(parents=True, exist_ok=True)
     
-    # Use BAAI/bge-base-en-v1.5 - one of the best open source embedding models
-    # This model consistently ranks at the top for embedding quality
-    print("Initializing BAAI/bge-base-en-v1.5 embedding model...")
-    print("(This is one of the best open source embedding models available)")
+    print("Initializing embedding model...")
     embedding_function = HuggingFaceEmbeddings(
         model_name="BAAI/bge-base-en-v1.5",
         model_kwargs={'device': 'cpu'},
-        encode_kwargs={
-            'normalize_embeddings': True,
-            'batch_size': 32  # Process 32 texts at once for efficiency
-        }
+        encode_kwargs={'normalize_embeddings': True, 'batch_size': 32}
     )
-    print("✅ Embedding model loaded!")
+    print("Embedding model loaded!")
     
-    # Check if vector store already exists
+
     if not force_recreate and (persist_path / "chroma.sqlite3").exists():
         print(f"Loading existing vector store from {persist_path}...")
         vectorstore = Chroma(
@@ -214,12 +198,8 @@ def create_visa_knowledge_base(
         print("Vector store loaded successfully!")
     else:
         print("Creating new vector store...")
-        # Create documents
         documents = create_visa_documents(str(csv_path))
-        
-        # Create embeddings and vector store with batching for progress tracking
         print(f"Creating embeddings for {len(documents)} documents...")
-        print(f"Processing in batches of {batch_size} documents...")
         
         from tqdm import tqdm
         
@@ -231,60 +211,35 @@ def create_visa_knowledge_base(
                      total=total_batches,
                      unit="batch"):
             batch = documents[i:i + batch_size]
-            
             if vectorstore is None:
-                # Create vectorstore with first batch
                 vectorstore = Chroma.from_documents(
                     documents=batch,
                     embedding=embedding_function,
                     persist_directory=str(persist_path)
                 )
             else:
-                # Add subsequent batches
                 vectorstore.add_documents(batch)
         
-        print(f"✅ Vector store created and saved to {persist_path}")
-        print(f"Total documents: {len(documents)}")
+        print(f"Vector store created: {len(documents)} documents")
     
-    # Create retriever with MMR (Maximum Marginal Relevance) for diverse results
     retriever = vectorstore.as_retriever(
         search_type="mmr",
-        search_kwargs={
-            "k": 5,  # Return top 5 most relevant documents
-            "fetch_k": 20,  # Fetch 20 candidates for MMR
-            "lambda_mult": 0.7  # Balance between relevance and diversity (0.7 = more relevance)
-        }
+        search_kwargs={"k": 5, "fetch_k": 20, "lambda_mult": 0.7}
     )
-    
-    print("Retriever created successfully!")
     return vectorstore, retriever
 
 
 if __name__ == "__main__":
-    # Test the knowledge base creation
-    print("=" * 60)
-    print("Creating Visa Rules Knowledge Base")
-    print("=" * 60)
-    
     vectorstore, retriever = create_visa_knowledge_base(force_recreate=False)
-    
-    # Test retrieval
-    print("\n" + "=" * 60)
-    print("Testing Retrieval")
-    print("=" * 60)
     
     test_queries = [
         "What visa do I need to travel from USA to India?",
         "Can I travel visa-free from UK to France?",
-        "What are the visa requirements for Australian passport holders going to Japan?",
     ]
     
     for query in test_queries:
         print(f"\nQuery: {query}")
-        print("-" * 60)
         results = retriever.invoke(query)
-        for i, doc in enumerate(results[:2], 1):  # Show top 2 results
-            print(f"\nResult {i}:")
-            print(f"  {doc.page_content}")
-            print(f"  Metadata: {doc.metadata}")
+        for i, doc in enumerate(results[:2], 1):
+            print(f"Result {i}: {doc.page_content[:150]}...")
 
