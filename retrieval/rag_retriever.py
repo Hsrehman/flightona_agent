@@ -159,11 +159,11 @@ def create_visa_knowledge_base(
         Tuple of (vector_store, retriever)
     """
     if csv_path is None:
-        local_path = Path(__file__).parent / "data" / "dataset" / "passport-index-tidy-iso3.csv"
+        local_path = Path(__file__).parent.parent / "data" / "dataset" / "passport-index-tidy-iso3.csv"
         if local_path.exists():
             csv_path = local_path
         else:
-            csv_path = Path(__file__).parent.parent / "passport-index-dataset" / "passport-index-tidy-iso3.csv"
+            csv_path = Path(__file__).parent.parent / "data" / "dataset" / "passport-index-tidy-iso3.csv"
     
     csv_path = Path(csv_path)
     if not csv_path.exists():
@@ -171,7 +171,7 @@ def create_visa_knowledge_base(
     
 
     if persist_directory is None:
-        persist_path = Path(__file__).parent / "data" / "visa_vectorstore"
+        persist_path = Path(__file__).parent.parent / "data" / "visa_vectorstore"
     else:
         persist_path = Path(persist_directory)
 

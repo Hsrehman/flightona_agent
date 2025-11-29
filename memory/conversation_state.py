@@ -45,6 +45,15 @@ class ConversationState:
     message_count: int = 0                # Number of messages processed
     last_intent: Optional[str] = None     # Last classified intent
     
+    # Follow-up tracking - remember what we just answered for follow-up questions
+    # e.g., User asks about Turkey, we answer, they ask "visa or evisa?" - we know it's about Turkey
+    last_answered_destination: Optional[str] = None       # ISO3 of last answered destination
+    last_answered_destination_name: Optional[str] = None  # Name of last answered destination
+    last_answered_origin: Optional[str] = None            # ISO3 of last answered origin  
+    last_answered_origin_name: Optional[str] = None       # Name of last answered origin
+    turns_since_answer: int = 0                           # How many turns since last answer
+    FOLLOW_UP_WINDOW: int = 2                             # Allow follow-ups within N turns
+    
     # Pending clarification - when a country is ambiguous
     pending_clarification: Optional[str] = None      # ISO3 code of ambiguous country
     pending_clarification_name: Optional[str] = None # Name of ambiguous country
@@ -217,7 +226,10 @@ class ConversationState:
     
     def _handle_clarification_response(self, message: str) -> Optional[Dict]:
         """
-        Handle a response to a clarification question.
+        Handle a response to a clarification question using the SetFit classifier.
+        
+        NO HARDCODING - uses the trained classifier to determine if user
+        means origin or destination.
         
         Args:
             message: The user's response to "Is X your nationality or destination?"
@@ -225,7 +237,8 @@ class ConversationState:
         Returns:
             Dict with updates, or None if not a valid clarification response
         """
-        message_lower = message.lower().strip()
+        # Import classifier here to avoid circular imports
+        from query_processing.intent_classifier import classify_intent
         
         updates = {
             'message': message,
@@ -238,7 +251,7 @@ class ConversationState:
         country_name = self.pending_clarification_name
         
         # FIRST: Check if user provided BOTH pieces of info in their response
-        # (This must come before indicator checks!)
+        # e.g., "dubai is my destination and im pakistani"
         extracted = extract_countries_from_text(message)
         if extracted.get('origin') and extracted.get('destination'):
             self.origin = extracted['origin']
@@ -251,38 +264,12 @@ class ConversationState:
             self.pending_clarification_name = None
             return updates
         
-        # Check for clear indicators
-        is_origin_indicators = [
-            'nationality', 'citizen', 'passport', 'i am from', 
-            "i'm from", 'my nationality', 'where i am from', 'my country'
-        ]
-        is_destination_indicators = [
-            'destination', 'going to', 'travel to', 'visit', 
-            'want to go', 'where i want', 'traveling to'
-        ]
+        # USE THE CLASSIFIER - NO HARDCODING!
+        # The SetFit model was trained on clarification responses
+        intent = classify_intent(message)
         
-        # Check if user said it's their nationality/origin
-        for indicator in is_origin_indicators:
-            if indicator in message_lower:
-                self.origin = country_code
-                self.origin_name = country_name
-                updates['origin_updated'] = True
-                self.pending_clarification = None
-                self.pending_clarification_name = None
-                return updates
-        
-        # Check if user said it's their destination
-        for indicator in is_destination_indicators:
-            if indicator in message_lower:
-                self.destination = country_code
-                self.destination_name = country_name
-                updates['destination_updated'] = True
-                self.pending_clarification = None
-                self.pending_clarification_name = None
-                return updates
-        
-        # Check for simple "origin" or "destination" response
-        if message_lower in ['origin', 'nationality', 'from there', 'from']:
+        if intent == 'clarification_origin':
+            # User indicated it's their origin/nationality
             self.origin = country_code
             self.origin_name = country_name
             updates['origin_updated'] = True
@@ -290,7 +277,8 @@ class ConversationState:
             self.pending_clarification_name = None
             return updates
         
-        if message_lower in ['destination', 'to', 'going there', 'there']:
+        elif intent == 'clarification_destination':
+            # User indicated it's their destination
             self.destination = country_code
             self.destination_name = country_name
             updates['destination_updated'] = True
@@ -298,8 +286,8 @@ class ConversationState:
             self.pending_clarification_name = None
             return updates
         
-        # If we can't determine from the clarification response, 
-        # clear the pending and let normal update flow handle it
+        # If classifier returns something else (casual, follow_up, etc.),
+        # clear pending and let normal update flow handle it
         self.pending_clarification = None
         self.pending_clarification_name = None
         return None
@@ -348,10 +336,22 @@ class ConversationState:
         """
         Reset the current query for a new destination query.
         
+        IMPORTANT: Stores the just-answered destination for follow-up questions.
+        e.g., "What about Turkey?" → answer → "visa or evisa?" → we know it's about Turkey
+        
         Args:
             keep_origin: If True, keeps nationality for follow-up queries.
                         e.g., "What about France?" after asking about Dubai.
         """
+        # Store what we just answered for follow-up questions
+        if self.destination:
+            self.last_answered_destination = self.destination
+            self.last_answered_destination_name = self.destination_name
+        if self.origin:
+            self.last_answered_origin = self.origin
+            self.last_answered_origin_name = self.origin_name
+        self.turns_since_answer = 0  # Reset counter - we just answered
+        
         if not keep_origin:
             self.origin = None
             self.origin_name = None
@@ -362,6 +362,39 @@ class ConversationState:
         self.pending_clarification_name = None
         # Keep has_visa_context True since user is still asking about visas
     
+    def increment_turn(self):
+        """Call this at the start of each message to track turns since last answer."""
+        self.turns_since_answer += 1
+    
+    def is_in_followup_window(self) -> bool:
+        """
+        Check if we're in the follow-up window for the last answered query.
+        
+        Returns:
+            True if we recently answered a query and follow-ups should use that context.
+        """
+        return (
+            self.last_answered_destination is not None and 
+            self.turns_since_answer <= self.FOLLOW_UP_WINDOW
+        )
+    
+    def get_followup_context(self) -> Optional[Dict]:
+        """
+        Get the context from the last answered query for follow-up questions.
+        
+        Returns:
+            Dict with origin/destination info, or None if not in follow-up window.
+        """
+        if not self.is_in_followup_window():
+            return None
+        
+        return {
+            'origin': self.last_answered_origin,
+            'origin_name': self.last_answered_origin_name,
+            'destination': self.last_answered_destination,
+            'destination_name': self.last_answered_destination_name,
+        }
+    
     def reset_all(self):
         """Full reset - new conversation."""
         self.origin = None
@@ -370,6 +403,11 @@ class ConversationState:
         self.destination_name = None
         self.pending_clarification = None
         self.pending_clarification_name = None
+        self.last_answered_destination = None
+        self.last_answered_destination_name = None
+        self.last_answered_origin = None
+        self.last_answered_origin_name = None
+        self.turns_since_answer = 0
         self.has_visa_context = False
         self.message_count = 0
         self.last_intent = None

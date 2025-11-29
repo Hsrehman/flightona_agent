@@ -36,7 +36,8 @@ from langchain_google_genai import ChatGoogleGenerativeAI
 from langchain_core.messages import HumanMessage, SystemMessage, AIMessage
 
 # YOUR components (FYP contribution!)
-from query_processing import classify_intent, check_completeness
+from query_processing import classify_intent, check_completeness, init_classifier
+from query_processing.intent_classifier import is_coming_soon_intent, get_coming_soon_response
 from memory.conversation_state import ConversationState
 from conversation.templates import (
     get_template_response, 
@@ -120,6 +121,9 @@ def process_message(
     start_time = time.time()
     timing = {}
     
+    # Track turns for follow-up window
+    state.increment_turn()
+    
     # STEP 1: Classify intent
     intent_start = time.time()
     intent = classify_intent(user_input, state.has_visa_context)
@@ -131,7 +135,14 @@ def process_message(
     timing['state_update'] = (time.time() - state_start) * 1000
     
     # STEP 3: Route based on intent
-    if intent == 'casual':
+    
+    # Check for "coming soon" features (booking, ticket_change, flight_info)
+    if is_coming_soon_intent(intent):
+        template_start = time.time()
+        response = get_coming_soon_response(intent)
+        timing['coming_soon_response'] = (time.time() - template_start) * 1000
+        
+    elif intent == 'casual':
         response = handle_casual_chat(user_input, state, llm)
         timing['llm_response'] = (time.time() - start_time) * 1000 - timing['intent_classification'] - timing['state_update']
         
@@ -146,6 +157,10 @@ def process_message(
             template_start = time.time()
             response = get_clarification_question(completeness.clarification_country)
             timing['template_response'] = (time.time() - template_start) * 1000
+        elif state.is_in_followup_window():
+            # Missing info but we recently answered - likely a follow-up question
+            response = handle_casual_chat(user_input, state, llm)
+            timing['llm_followup'] = (time.time() - start_time) * 1000
         else:
             template_start = time.time()
             response = get_template_response(completeness.suggestion)
@@ -254,6 +269,9 @@ def process_message_stream(
     start_time = time.time()
     timing = {}
     
+    # Track turns for follow-up window
+    state.increment_turn()
+    
     # STEP 1: Classify intent
     intent_start = time.time()
     intent = classify_intent(user_input, state.has_visa_context)
@@ -268,7 +286,16 @@ def process_message_stream(
     ttft = None  # Time to first token
     
     # STEP 3: Route based on intent
-    if intent == 'casual':
+    
+    # Check for "coming soon" features (booking, ticket_change, flight_info)
+    if is_coming_soon_intent(intent):
+        template_start = time.time()
+        response = get_coming_soon_response(intent)
+        timing['coming_soon_response'] = (time.time() - template_start) * 1000
+        full_response = response
+        yield {'chunk': response}
+        
+    elif intent == 'casual':
         llm_start = time.time()
         for chunk in handle_casual_chat_stream(user_input, state, llm):
             if ttft is None:
@@ -293,6 +320,16 @@ def process_message_stream(
             timing['template_response'] = (time.time() - template_start) * 1000
             full_response = response
             yield {'chunk': response}
+        elif state.is_in_followup_window():
+            # Missing info but we recently answered - likely a follow-up question
+            llm_start = time.time()
+            for chunk in handle_casual_chat_stream(user_input, state, llm):
+                if ttft is None:
+                    ttft = (time.time() - llm_start) * 1000
+                full_response += chunk
+                yield {'chunk': chunk}
+            timing['llm_followup'] = (time.time() - llm_start) * 1000
+            timing['ttft'] = ttft
         else:
             template_start = time.time()
             response = get_template_response(completeness.suggestion)
@@ -379,6 +416,7 @@ def run_rag_chatbot_interactive(show_timing: bool = True, stream: bool = False):
     print()
     
     print("Initializing...")
+    init_classifier()  # Pre-load semantic intent classifier
     retriever = get_rag_retriever()
     llm = get_llm()
     state = ConversationState()
